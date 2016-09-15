@@ -44,6 +44,9 @@
 #include <vis.h>
 #endif
 
+//include oath header
+#include "ext/oath/oath.h"
+
 #include "openbsd-compat/sys-queue.h"
 
 #include "xmalloc.h"
@@ -661,7 +664,7 @@ userauth_gssapi(Authctxt *authctxt)
 	while (mech < gss_supported->count && !ok) {
 		/* My DER encoding requires length<128 */
 		if (gss_supported->elements[mech].length < 128 &&
-		    ssh_gssapi_check_mechanism(&gssctxt, 
+		    ssh_gssapi_check_mechanism(&gssctxt,
 		    &gss_supported->elements[mech], authctxt->host)) {
 			ok = 1; /* Mechanism works */
 		} else {
@@ -1509,6 +1512,7 @@ input_userauth_info_req(int type, u_int32_t seq, void *ctxt)
 	char *name, *inst, *lang, *prompt, *response;
 	u_int num_prompts, i;
 	int echo = 0;
+    char oathCode[256];
 
 	debug2("input_userauth_info_req");
 
@@ -1542,9 +1546,15 @@ input_userauth_info_req(int type, u_int32_t seq, void *ctxt)
 	for (i = 0; i < num_prompts; i++) {
 		prompt = packet_get_string(NULL);
 		echo = packet_get_char();
-
-		response = read_passphrase(prompt, echo ? RP_ECHO : 0);
-
+        //如果收到要求接受Verification那么就直接自动输入
+        if(!strncmp(prompt, "Verification", 12) && options.oathkey != NULL){
+            sprintf(oathCode, "%d", generateCode(options.oathkey, 0));
+            debug2("This is OATH code : %s", oathCode);
+            response = xstrdup(oathCode);
+        }else{
+            response = read_passphrase(prompt, echo ? RP_ECHO : 0);
+        }
+//response = read_passphrase(prompt, echo ? RP_ECHO : 0);
 		packet_put_cstring(response);
 		explicit_bzero(response, strlen(response));
 		free(response);
@@ -1921,4 +1931,3 @@ authmethods_get(void)
 	buffer_free(&b);
 	return list;
 }
-

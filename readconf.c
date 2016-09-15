@@ -170,7 +170,7 @@ typedef enum {
 	oCanonicalizeFallbackLocal, oCanonicalizePermittedCNAMEs,
 	oStreamLocalBindMask, oStreamLocalBindUnlink, oRevokedHostKeys,
 	oFingerprintHash, oUpdateHostkeys, oHostbasedKeyTypes,
-	oPubkeyAcceptedKeyTypes, oProxyJump,
+	oPubkeyAcceptedKeyTypes, oProxyJump, oOathKEY,
 	oIgnoredUnknownOption, oDeprecated, oUnsupported
 } OpCodes;
 
@@ -296,7 +296,7 @@ static struct {
 	{ "pubkeyacceptedkeytypes", oPubkeyAcceptedKeyTypes },
 	{ "ignoreunknown", oIgnoreUnknown },
 	{ "proxyjump", oProxyJump },
-
+    { "oathkey", oOathKEY},
 	{ NULL, oBadOption }
 };
 
@@ -1662,6 +1662,11 @@ parse_keytypes:
 		    filename, linenum, keyword);
 		return 0;
 
+    case oOathKEY:
+        charptr = &options->oathkey;
+        goto parse_string;
+        return 0;
+
 	case oUnsupported:
 		error("%s line %d: Unsupported option \"%s\"",
 		    filename, linenum, keyword);
@@ -1858,6 +1863,7 @@ initialize_options(Options * options)
 	options->update_hostkeys = -1;
 	options->hostbased_key_types = NULL;
 	options->pubkey_key_types = NULL;
+    options->oathkey = NULL;
 }
 
 /*
@@ -2561,6 +2567,8 @@ dump_client_config(Options *o, const char *host)
 	dump_cfg_string(oPubkeyAcceptedKeyTypes, o->pubkey_key_types);
 	dump_cfg_string(oRevokedHostKeys, o->revoked_host_keys);
 	dump_cfg_string(oXAuthLocation, o->xauth_location);
+    // oath conf added at 20160912
+    dump_cfg_string(oOathKEY, o->oathkey);
 
 	/* Forwards */
 	dump_cfg_forwards(oDynamicForward, o->num_local_forwards, o->local_forwards);

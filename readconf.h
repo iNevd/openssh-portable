@@ -18,6 +18,7 @@
 
 /* Data structure for representing option data. */
 
+#define MAX_OATH_LEN        32
 #define MAX_SEND_ENV		256
 #define SSH_MAX_HOSTS_FILES	32
 #define MAX_CANON_DOMAINS	32
@@ -168,6 +169,7 @@ typedef struct {
 	int	jump_port;
 	char   *jump_extra;
 
+    char    *oathkey;          /* OATH KEY of user */
 	char	*ignored_unknown; /* Pattern list of unknown tokens to ignore */
 }       Options;
 
