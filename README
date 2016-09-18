@@ -1,3 +1,9 @@
+You can add One Line to your ssh_config file to enable the Google 2-Step Verification* Feather of the ssh client.
+
+oathKEY "this is your sercret key of Google 2-Step Verification"
+
+Then, You will not receive the "Verification code:" prompt. It is done automatically in the background
+
 See http://www.openssh.com/txt/release-7.3p1 for the release notes.
 
 Please read http://www.openssh.com/report.html for bug reporting
