@@ -1,4 +1,4 @@
-/*	$OpenBSD: sshbuf.h,v 1.7 2016/05/02 08:49:03 djm Exp $	*/
+/*	$OpenBSD: sshbuf.h,v 1.11 2018/07/09 21:56:06 markus Exp $	*/
 /*
  * Copyright (c) 2011 Damien Miller
  *
@@ -49,15 +49,6 @@ struct sshbuf {
 	u_int refcount;		/* Tracks self and number of child buffers */
 	struct sshbuf *parent;	/* If child, pointer to parent */
 };
-
-#ifndef SSHBUF_NO_DEPREACTED
-/*
- * NB. Please do not use sshbuf_init() in new code. Please use sshbuf_new()
- * instead. sshbuf_init() is deprectated and will go away soon (it is
- * only included to allow compat with buffer_* in OpenSSH)
- */
-void sshbuf_init(struct sshbuf *buf);
-#endif
 
 /*
  * Create a new sshbuf buffer.
@@ -139,6 +130,14 @@ u_char *sshbuf_mutable_ptr(const struct sshbuf *buf);
 int	sshbuf_check_reserve(const struct sshbuf *buf, size_t len);
 
 /*
+ * Preallocates len additional bytes in buf.
+ * Useful for cases where the caller knows how many bytes will ultimately be
+ * required to avoid realloc in the buffer code.
+ * Returns 0 on success, or a negative SSH_ERR_* error code on failure.
+ */
+int	sshbuf_allocate(struct sshbuf *buf, size_t len);
+
+/*
  * Reserve len bytes in buf.
  * Returns 0 on success and a pointer to the first reserved byte via the
  * optional dpp parameter or a negative * SSH_ERR_* error code on failure.
@@ -203,6 +202,7 @@ int	sshbuf_get_string_direct(struct sshbuf *buf, const u_char **valp,
 /* Another variant: "peeks" into the buffer without modifying it */
 int	sshbuf_peek_string_direct(const struct sshbuf *buf, const u_char **valp,
 	    size_t *lenp);
+/* XXX peek_u8 / peek_u32 */
 
 /*
  * Functions to extract or store SSH wire encoded bignums and elliptic

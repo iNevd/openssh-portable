@@ -1,4 +1,4 @@
-/* $OpenBSD: myproposal.h,v 1.52 2016/09/05 14:02:42 djm Exp $ */
+/* $OpenBSD: myproposal.h,v 1.56 2018/07/03 11:39:54 djm Exp $ */
 
 /*
  * Copyright (c) 2000 Markus Friedl.  All rights reserved.
@@ -84,7 +84,9 @@
 
 #ifdef WITH_OPENSSL
 # ifdef HAVE_EVP_SHA256
-#  define KEX_CURVE25519_METHODS "curve25519-sha256@libssh.org,"
+#  define KEX_CURVE25519_METHODS \
+	"curve25519-sha256," \
+	"curve25519-sha256@libssh.org,"
 # else
 #  define KEX_CURVE25519_METHODS ""
 # endif
@@ -105,6 +107,8 @@
 #define	KEX_DEFAULT_PK_ALG	\
 	HOSTKEY_ECDSA_CERT_METHODS \
 	"ssh-ed25519-cert-v01@openssh.com," \
+	"rsa-sha2-512-cert-v01@openssh.com," \
+	"rsa-sha2-256-cert-v01@openssh.com," \
 	"ssh-rsa-cert-v01@openssh.com," \
 	HOSTKEY_ECDSA_METHODS \
 	"ssh-ed25519," \
@@ -119,8 +123,7 @@
 	"aes128-ctr,aes192-ctr,aes256-ctr" \
 	AESGCM_CIPHER_MODES
 
-#define KEX_CLIENT_ENCRYPT KEX_SERVER_ENCRYPT "," \
-	"aes128-cbc,aes192-cbc,aes256-cbc"
+#define KEX_CLIENT_ENCRYPT KEX_SERVER_ENCRYPT
 
 #define KEX_SERVER_MAC \
 	"umac-64-etm@openssh.com," \
@@ -139,6 +142,7 @@
 #else /* WITH_OPENSSL */
 
 #define KEX_SERVER_KEX		\
+	"curve25519-sha256," \
 	"curve25519-sha256@libssh.org"
 #define	KEX_DEFAULT_PK_ALG	\
 	"ssh-ed25519-cert-v01@openssh.com," \
@@ -164,7 +168,7 @@
 
 #endif /* WITH_OPENSSL */
 
-#define	KEX_DEFAULT_COMP	"none,zlib@openssh.com,zlib"
+#define	KEX_DEFAULT_COMP	"none,zlib@openssh.com"
 #define	KEX_DEFAULT_LANG	""
 
 #define KEX_CLIENT \

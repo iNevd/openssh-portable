@@ -1,4 +1,4 @@
-/* $OpenBSD: dh.c,v 1.61 2016/09/12 01:22:38 deraadt Exp $ */
+/* $OpenBSD: dh.c,v 1.65 2018/06/26 11:23:59 millert Exp $ */
 /*
  * Copyright (c) 2000 Niels Provos.  All rights reserved.
  *
@@ -25,6 +25,7 @@
 
 #include "includes.h"
 
+#ifdef WITH_OPENSSL
 
 #include <openssl/bn.h>
 #include <openssl/dh.h>
@@ -134,10 +135,8 @@ parse_prime(int linenum, char *line, struct dhgroup *dhg)
 	return 1;
 
  fail:
-	if (dhg->g != NULL)
-		BN_clear_free(dhg->g);
-	if (dhg->p != NULL)
-		BN_clear_free(dhg->p);
+	BN_clear_free(dhg->g);
+	BN_clear_free(dhg->p);
 	dhg->g = dhg->p = NULL;
 	return 0;
 }
@@ -146,20 +145,20 @@ DH *
 choose_dh(int min, int wantbits, int max)
 {
 	FILE *f;
-	char line[4096];
-	int best, bestcount, which;
-	int linenum;
+	char *line = NULL;
+	size_t linesize = 0;
+	int best, bestcount, which, linenum;
 	struct dhgroup dhg;
 
 	if ((f = fopen(_PATH_DH_MODULI, "r")) == NULL) {
-		logit("WARNING: could open open %s (%s), using fixed modulus",
+		logit("WARNING: could not open %s (%s), using fixed modulus",
 		    _PATH_DH_MODULI, strerror(errno));
 		return (dh_new_group_fallback(max));
 	}
 
 	linenum = 0;
 	best = bestcount = 0;
-	while (fgets(line, sizeof(line), f)) {
+	while (getline(&line, &linesize, f) != -1) {
 		linenum++;
 		if (!parse_prime(linenum, line, &dhg))
 			continue;
@@ -177,6 +176,9 @@ choose_dh(int min, int wantbits, int max)
 		if (dhg.size == best)
 			bestcount++;
 	}
+	free(line);
+	line = NULL;
+	linesize = 0;
 	rewind(f);
 
 	if (bestcount == 0) {
@@ -187,7 +189,7 @@ choose_dh(int min, int wantbits, int max)
 
 	linenum = 0;
 	which = arc4random_uniform(bestcount);
-	while (fgets(line, sizeof(line), f)) {
+	while (getline(&line, &linesize, f) != -1) {
 		if (!parse_prime(linenum, line, &dhg))
 			continue;
 		if ((dhg.size > max || dhg.size < min) ||
@@ -199,6 +201,8 @@ choose_dh(int min, int wantbits, int max)
 		}
 		break;
 	}
+	free(line);
+	line = NULL;
 	fclose(f);
 	if (linenum != which+1) {
 		logit("WARNING: line %d disappeared in %s, giving up",
@@ -465,3 +469,5 @@ dh_estimate(int bits)
 		return 7680;
 	return 8192;
 }
+
+#endif /* WITH_OPENSSL */

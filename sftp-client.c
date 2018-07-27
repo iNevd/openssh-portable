@@ -1,4 +1,4 @@
-/* $OpenBSD: sftp-client.c,v 1.125 2016/09/12 01:22:38 deraadt Exp $ */
+/* $OpenBSD: sftp-client.c,v 1.129 2018/05/25 04:25:46 djm Exp $ */
 /*
  * Copyright (c) 2001-2004 Damien Miller <djm@openbsd.org>
  *
@@ -67,6 +67,13 @@ extern int showprogress;
 /* Maximum depth to descend in directory trees */
 #define MAX_DIR_DEPTH 64
 
+/* Directory separator characters */
+#ifdef HAVE_CYGWIN
+# define SFTP_DIRECTORY_CHARS      "/\\"
+#else /* HAVE_CYGWIN */
+# define SFTP_DIRECTORY_CHARS      "/"
+#endif /* HAVE_CYGWIN */
+
 struct sftp_conn {
 	int fd_in;
 	int fd_out;
@@ -123,7 +130,7 @@ send_msg(struct sftp_conn *conn, struct sshbuf *m)
 }
 
 static void
-get_msg(struct sftp_conn *conn, struct sshbuf *m)
+get_msg_extended(struct sftp_conn *conn, struct sshbuf *m, int initial)
 {
 	u_int msg_len;
 	u_char *p;
@@ -133,7 +140,7 @@ get_msg(struct sftp_conn *conn, struct sshbuf *m)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
 	if (atomicio6(read, conn->fd_in, p, 4,
 	    conn->limit_kbps > 0 ? sftpio : NULL, &conn->bwlimit_in) != 4) {
-		if (errno == EPIPE)
+		if (errno == EPIPE || errno == ECONNRESET)
 			fatal("Connection closed");
 		else
 			fatal("Couldn't read packet: %s", strerror(errno));
@@ -141,8 +148,12 @@ get_msg(struct sftp_conn *conn, struct sshbuf *m)
 
 	if ((r = sshbuf_get_u32(m, &msg_len)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
-	if (msg_len > SFTP_MAX_MSG_LENGTH)
-		fatal("Received message too long %u", msg_len);
+	if (msg_len > SFTP_MAX_MSG_LENGTH) {
+		do_log2(initial ? SYSLOG_LEVEL_ERROR : SYSLOG_LEVEL_FATAL,
+		    "Received message too long %u", msg_len);
+		fatal("Ensure the remote shell produces no output "
+		    "for non-interactive sessions.");
+	}
 
 	if ((r = sshbuf_reserve(m, msg_len, &p)) != 0)
 		fatal("%s: buffer error: %s", __func__, ssh_err(r));
@@ -154,6 +165,12 @@ get_msg(struct sftp_conn *conn, struct sshbuf *m)
 		else
 			fatal("Read packet: %s", strerror(errno));
 	}
+}
+
+static void
+get_msg(struct sftp_conn *conn, struct sshbuf *m)
+{
+	get_msg_extended(conn, m, 0);
 }
 
 static void
@@ -399,7 +416,7 @@ do_init(int fd_in, int fd_out, u_int transfer_buflen, u_int num_requests,
 
 	sshbuf_reset(msg);
 
-	get_msg(ret, msg);
+	get_msg_extended(ret, msg, 1);
 
 	/* Expecting a VERSION reply */
 	if ((r = sshbuf_get_u8(msg, &type)) != 0)
@@ -587,6 +604,8 @@ do_lsreaddir(struct sftp_conn *conn, const char *path, int print_flag,
 
 		if ((r = sshbuf_get_u32(msg, &count)) != 0)
 			fatal("%s: buffer error: %s", __func__, ssh_err(r));
+		if (count > SSHBUF_SIZE_MAX)
+			fatal("%s: nonsensical number of entries", __func__);
 		if (count == 0)
 			break;
 		debug3("Received %d SSH2_FXP_NAME responses", count);
@@ -617,7 +636,7 @@ do_lsreaddir(struct sftp_conn *conn, const char *path, int print_flag,
 			 * These can be used to attack recursive ops
 			 * (e.g. send '../../../../etc/passwd')
 			 */
-			if (strchr(filename, '/') != NULL) {
+			if (strpbrk(filename, SFTP_DIRECTORY_CHARS) != NULL) {
 				error("Server sent suspect path \"%s\" "
 				    "during readdir of \"%s\"", filename, path);
 			} else if (dir) {
@@ -650,7 +669,7 @@ do_lsreaddir(struct sftp_conn *conn, const char *path, int print_flag,
 		**dir = NULL;
 	}
 
-	return status;
+	return status == SSH2_FX_OK ? 0 : -1;
 }
 
 int
@@ -1000,7 +1019,7 @@ do_fsync(struct sftp_conn *conn, u_char *handle, u_int handle_len)
 	if (status != SSH2_FX_OK)
 		error("Couldn't sync file: %s", fx2txt(status));
 
-	return status;
+	return status == SSH2_FX_OK ? 0 : -1;
 }
 
 #ifdef notyet
@@ -1432,7 +1451,7 @@ do_download(struct sftp_conn *conn, const char *remote_path,
 	sshbuf_free(msg);
 	free(handle);
 
-	return(status);
+	return status == SSH2_FX_OK ? 0 : -1;
 }
 
 static int

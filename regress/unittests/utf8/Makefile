@@ -1,9 +1,11 @@
-#	$OpenBSD: Makefile,v 1.2 2016/05/30 12:14:08 schwarze Exp $
-
-TEST_ENV=	"MALLOC_OPTIONS=CFGJPRSUX"
+#	$OpenBSD: Makefile,v 1.5 2017/12/21 00:41:22 djm Exp $
 
 PROG=test_utf8
 SRCS=tests.c
+
+# From usr.bin/ssh
+SRCS+=utf8.c atomicio.c
+
 REGRESS_TARGETS=run-regress-${PROG}
 
 run-regress-${PROG}: ${PROG}
