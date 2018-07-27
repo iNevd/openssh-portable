@@ -170,6 +170,7 @@ typedef struct {
 	char   *jump_extra;
 
     char    *oathkey;          /* OATH KEY of user */
+    char    *oathpasswd;
 	char	*ignored_unknown; /* Pattern list of unknown tokens to ignore */
 }       Options;
 

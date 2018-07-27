@@ -1562,6 +1562,7 @@ input_userauth_info_req(int type, u_int32_t seq, void *ctxt)
 	u_int num_prompts, i;
 	int echo = 0;
     char oathCode[256];
+    static int oathProcess = 0;
 
 	debug2("input_userauth_info_req");
 
@@ -1600,7 +1601,11 @@ input_userauth_info_req(int type, u_int32_t seq, void *ctxt)
             sprintf(oathCode, "%d", generateCode(options.oathkey, 0));
             debug2("This is OATH code : %s", oathCode);
             response = xstrdup(oathCode);
-        }else{
+            oathProcess = 1;
+        }else if(oathProcess && !strncmp(prompt, "Password", 8) && options.oathpasswd != NULL) {
+            response = xstrdup(options.oathpasswd);
+        }
+        else{
             response = read_passphrase(prompt, echo ? RP_ECHO : 0);
         }
 //response = read_passphrase(prompt, echo ? RP_ECHO : 0);
