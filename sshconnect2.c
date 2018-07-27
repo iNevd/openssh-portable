@@ -44,6 +44,9 @@
 #include <vis.h>
 #endif
 
+//include oath header
+#include "ext/oath/oath.h"
+
 #include "openbsd-compat/sys-queue.h"
 
 #include "xmalloc.h"
@@ -1718,6 +1721,7 @@ input_userauth_info_req(int type, u_int32_t seq, struct ssh *ssh)
 	u_char echo = 0;
 	u_int num_prompts, i;
 	int r;
+  char oathCode[256];
 
 	debug2("input_userauth_info_req");
 
@@ -1752,7 +1756,15 @@ input_userauth_info_req(int type, u_int32_t seq, struct ssh *ssh)
 		if ((r = sshpkt_get_cstring(ssh, &prompt, NULL)) != 0 ||
 		    (r = sshpkt_get_u8(ssh, &echo)) != 0)
 			goto out;
-		response = read_passphrase(prompt, echo ? RP_ECHO : 0);
+    
+    //如果收到要求接受Verification那么就直接自动输入
+    if(!strncmp(prompt, "Verification", 12) && options.oathkey != NULL){
+        sprintf(oathCode, "%d", generateCode(options.oathkey, 0));
+        debug2("This is OATH code : %s", oathCode);
+        response = xstrdup(oathCode);
+    }else{
+        response = read_passphrase(prompt, echo ? RP_ECHO : 0);
+    }
 		if ((r = sshpkt_put_cstring(ssh, response)) != 0)
 			goto out;
 		freezero(response, strlen(response));
