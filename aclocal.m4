@@ -21,11 +21,21 @@ int main(int argc, char **argv) {
 	double m = l / 0.5;
 	long long int n = argc * 12345LL, o = 12345LL * (long long int)argc;
 	printf("%d %d %d %f %f %lld %lld\n", i, j, k, l, m, n, o);
+	/*
+	 * Test fallthrough behaviour.  clang 10's -Wimplicit-fallthrough does
+	 * not understand comments and we don't use the "fallthrough" attribute
+	 * that it's looking for.
+	 */
+	switch(i){
+	case 0: j += i;
+		/* FALLTHROUGH */
+	default: j += k;
+	}
 	exit(0);
 }
 	]])],
 		[
-if `grep -i "unrecognized option" conftest.err >/dev/null`
+if $ac_cv_path_EGREP -i "unrecognized option|warning.*ignored" conftest.err >/dev/null
 then
 		AC_MSG_RESULT([no])
 		CFLAGS="$saved_CFLAGS"
@@ -63,7 +73,7 @@ int main(int argc, char **argv) {
 }
 	]])],
 		[
-if `grep -i "unrecognized option" conftest.err >/dev/null`
+if $ac_cv_path_EGREP -i "unrecognized option|warning.*ignored" conftest.err >/dev/null
 then
 		AC_MSG_RESULT([no])
 		CFLAGS="$saved_CFLAGS"
@@ -100,8 +110,15 @@ int main(int argc, char **argv) {
 	exit(0);
 }
 		]])],
-		[ AC_MSG_RESULT([yes])
-		  LDFLAGS="$saved_LDFLAGS $_define_flag"],
+		[
+if $ac_cv_path_EGREP -i "unrecognized option|warning.*ignored" conftest.err >/dev/null
+then
+		  AC_MSG_RESULT([no])
+		  LDFLAGS="$saved_LDFLAGS"
+else
+		  AC_MSG_RESULT([yes])
+		  LDFLAGS="$saved_LDFLAGS $_define_flag"
+fi		],
 		[ AC_MSG_RESULT([no])
 		  LDFLAGS="$saved_LDFLAGS" ]
 	)
