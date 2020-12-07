@@ -1,4 +1,4 @@
-/* $OpenBSD: misc.c,v 1.153 2020/06/26 05:16:38 djm Exp $ */
+/* $OpenBSD: misc.c,v 1.156 2020/11/27 00:49:58 djm Exp $ */
 /*
  * Copyright (c) 2000 Markus Friedl.  All rights reserved.
  * Copyright (c) 2005-2020 Damien Miller.  All rights reserved.
@@ -229,6 +229,60 @@ set_rdomain(int fd, const char *name)
 	error("Setting routing domain is not supported on this platform");
 	return -1;
 #endif
+}
+
+int
+get_sock_af(int fd)
+{
+	struct sockaddr_storage to;
+	socklen_t tolen = sizeof(to);
+
+	memset(&to, 0, sizeof(to));
+	if (getsockname(fd, (struct sockaddr *)&to, &tolen) == -1)
+		return -1;
+#ifdef IPV4_IN_IPV6
+	if (to.ss_family == AF_INET6 &&
+	    IN6_IS_ADDR_V4MAPPED(&((struct sockaddr_in6 *)&to)->sin6_addr))
+		return AF_INET;
+#endif
+	return to.ss_family;
+}
+
+void
+set_sock_tos(int fd, int tos)
+{
+#ifndef IP_TOS_IS_BROKEN
+	int af;
+
+	switch ((af = get_sock_af(fd))) {
+	case -1:
+		/* assume not a socket */
+		break;
+	case AF_INET:
+# ifdef IP_TOS
+		debug3_f("set socket %d IP_TOS 0x%02x", fd, tos);
+		if (setsockopt(fd, IPPROTO_IP, IP_TOS,
+		    &tos, sizeof(tos)) == -1) {
+			error("setsockopt socket %d IP_TOS %d: %s:",
+			    fd, tos, strerror(errno));
+		}
+# endif /* IP_TOS */
+		break;
+	case AF_INET6:
+# ifdef IPV6_TCLASS
+		debug3_f("set socket %d IPV6_TCLASS 0x%02x", fd, tos);
+		if (setsockopt(fd, IPPROTO_IPV6, IPV6_TCLASS,
+		    &tos, sizeof(tos)) == -1) {
+			error("setsockopt socket %d IPV6_TCLASS %d: %.100s:",
+			    fd, tos, strerror(errno));
+		}
+# endif /* IPV6_TCLASS */
+		break;
+	default:
+		debug2_f("unsupported socket family %d", af);
+		break;
+	}
+#endif /* IP_TOS_IS_BROKEN */
 }
 
 /*
@@ -1111,9 +1165,9 @@ vdollar_percent_expand(int *parseerror, int dollar, int percent,
 	size_t len;
 
 	if ((buf = sshbuf_new()) == NULL)
-		fatal("%s: sshbuf_new failed", __func__);
+		fatal_f("sshbuf_new failed");
 	if (parseerror == NULL)
-		fatal("%s: null parseerror arg", __func__);
+		fatal_f("null parseerror arg");
 	*parseerror = 1;
 
 	/* Gather keys if we're doing percent expansion. */
@@ -1123,14 +1177,15 @@ vdollar_percent_expand(int *parseerror, int dollar, int percent,
 			if (keys[num_keys].key == NULL)
 				break;
 			keys[num_keys].repl = va_arg(ap, char *);
-			if (keys[num_keys].repl == NULL)
-				fatal("%s: NULL replacement for token %s", __func__, keys[num_keys].key);
+			if (keys[num_keys].repl == NULL) {
+				fatal_f("NULL replacement for token %s",
+				    keys[num_keys].key);
+			}
 		}
 		if (num_keys == EXPAND_MAX_KEYS && va_arg(ap, char *) != NULL)
-			fatal("%s: too many keys", __func__);
+			fatal_f("too many keys");
 		if (num_keys == 0)
-			fatal("%s: percent expansion without token list",
-			    __func__);
+			fatal_f("percent expansion without token list");
 	}
 
 	/* Expand string */
@@ -1139,28 +1194,24 @@ vdollar_percent_expand(int *parseerror, int dollar, int percent,
 		if (dollar && string[0] == '$' && string[1] == '{') {
 			string += 2;  /* skip over '${' */
 			if ((varend = strchr(string, '}')) == NULL) {
-				error("%s: environment variable '%s' missing "
-				   "closing '}'", __func__, string);
+				error_f("environment variable '%s' missing "
+				   "closing '}'", string);
 				goto out;
 			}
 			len = varend - string;
 			if (len == 0) {
-				error("%s: zero-length environment variable",
-				    __func__);
+				error_f("zero-length environment variable");
 				goto out;
 			}
 			var = xmalloc(len + 1);
 			(void)strlcpy(var, string, len + 1);
 			if ((val = getenv(var)) == NULL) {
-				error("%s: env var ${%s} has no value",
-				    __func__, var);
+				error_f("env var ${%s} has no value", var);
 				missingvar = 1;
 			} else {
-				debug3("%s: expand ${%s} -> '%s'", __func__,
-				    var, val);
+				debug3_f("expand ${%s} -> '%s'", var, val);
 				if ((r = sshbuf_put(buf, val, strlen(val))) !=0)
-					fatal("%s: sshbuf_put: %s", __func__,
-					    ssh_err(r));
+					fatal_fr(r, "sshbuf_put ${}");
 			}
 			free(var);
 			string += len;
@@ -1174,10 +1225,8 @@ vdollar_percent_expand(int *parseerror, int dollar, int percent,
 		 */
 		if (*string != '%' || !percent) {
  append:
-			if ((r = sshbuf_put_u8(buf, *string)) != 0) {
-				fatal("%s: sshbuf_put_u8: %s",
-				    __func__, ssh_err(r));
-			}
+			if ((r = sshbuf_put_u8(buf, *string)) != 0)
+				fatal_fr(r, "sshbuf_put_u8 %%");
 			continue;
 		}
 		string++;
@@ -1185,26 +1234,24 @@ vdollar_percent_expand(int *parseerror, int dollar, int percent,
 		if (*string == '%')
 			goto append;
 		if (*string == '\0') {
-			error("%s: invalid format", __func__);
+			error_f("invalid format");
 			goto out;
 		}
 		for (i = 0; i < num_keys; i++) {
 			if (strchr(keys[i].key, *string) != NULL) {
 				if ((r = sshbuf_put(buf, keys[i].repl,
-				    strlen(keys[i].repl))) != 0) {
-					fatal("%s: sshbuf_put: %s",
-					    __func__, ssh_err(r));
-				}
+				    strlen(keys[i].repl))) != 0)
+					fatal_fr(r, "sshbuf_put %%-repl");
 				break;
 			}
 		}
 		if (i >= num_keys) {
-			error("%s: unknown key %%%c", __func__, *string);
+			error_f("unknown key %%%c", *string);
 			goto out;
 		}
 	}
 	if (!missingvar && (ret = sshbuf_dup_string(buf)) == NULL)
-		fatal("%s: sshbuf_dup_string failed", __func__);
+		fatal_f("sshbuf_dup_string failed");
 	*parseerror = 0;
  out:
 	sshbuf_free(buf);
@@ -1248,7 +1295,7 @@ percent_expand(const char *string, ...)
 	ret = vdollar_percent_expand(&err, 0, 1, string, ap);
 	va_end(ap);
 	if (err)
-		fatal("%s failed", __func__);
+		fatal_f("failed");
 	return ret;
 }
 
@@ -1267,7 +1314,7 @@ percent_dollar_expand(const char *string, ...)
 	ret = vdollar_percent_expand(&err, 1, 1, string, ap);
 	va_end(ap);
 	if (err)
-		fatal("%s failed", __func__);
+		fatal_f("failed");
 	return ret;
 }
 
@@ -1300,16 +1347,16 @@ tun_open(int tun, int mode, char **ifname)
 				break;
 		}
 	} else {
-		debug("%s: invalid tunnel %u", __func__, tun);
+		debug_f("invalid tunnel %u", tun);
 		return -1;
 	}
 
 	if (fd == -1) {
-		debug("%s: %s open: %s", __func__, name, strerror(errno));
+		debug_f("%s open: %s", name, strerror(errno));
 		return -1;
 	}
 
-	debug("%s: %s mode %d fd %d", __func__, name, mode, fd);
+	debug_f("%s mode %d fd %d", name, mode, fd);
 
 	/* Bring interface up if it is not already */
 	snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), "%s%d", tunbase, tun);
@@ -1317,16 +1364,16 @@ tun_open(int tun, int mode, char **ifname)
 		goto failed;
 
 	if (ioctl(sock, SIOCGIFFLAGS, &ifr) == -1) {
-		debug("%s: get interface %s flags: %s", __func__,
-		    ifr.ifr_name, strerror(errno));
+		debug_f("get interface %s flags: %s", ifr.ifr_name,
+		    strerror(errno));
 		goto failed;
 	}
 
 	if (!(ifr.ifr_flags & IFF_UP)) {
 		ifr.ifr_flags |= IFF_UP;
 		if (ioctl(sock, SIOCSIFFLAGS, &ifr) == -1) {
-			debug("%s: activate interface %s: %s", __func__,
-			    ifr.ifr_name, strerror(errno));
+			debug_f("activate interface %s: %s", ifr.ifr_name,
+			    strerror(errno));
 			goto failed;
 		}
 	}
@@ -1677,7 +1724,7 @@ mktemp_proto(char *s, size_t len)
 	}
 	r = snprintf(s, len, "/tmp/ssh-XXXXXXXXXXXX");
 	if (r < 0 || (size_t)r >= len)
-		fatal("%s: template string too short", __func__);
+		fatal_f("template string too short");
 }
 
 static const struct {
@@ -1764,8 +1811,7 @@ unix_listener(const char *path, int backlog, int unlink_first)
 	sunaddr.sun_family = AF_UNIX;
 	if (strlcpy(sunaddr.sun_path, path,
 	    sizeof(sunaddr.sun_path)) >= sizeof(sunaddr.sun_path)) {
-		error("%s: path \"%s\" too long for Unix domain socket",
-		    __func__, path);
+		error_f("path \"%s\" too long for Unix domain socket", path);
 		errno = ENAMETOOLONG;
 		return -1;
 	}
@@ -1773,7 +1819,7 @@ unix_listener(const char *path, int backlog, int unlink_first)
 	sock = socket(PF_UNIX, SOCK_STREAM, 0);
 	if (sock == -1) {
 		saved_errno = errno;
-		error("%s: socket: %.100s", __func__, strerror(errno));
+		error_f("socket: %.100s", strerror(errno));
 		errno = saved_errno;
 		return -1;
 	}
@@ -1783,16 +1829,14 @@ unix_listener(const char *path, int backlog, int unlink_first)
 	}
 	if (bind(sock, (struct sockaddr *)&sunaddr, sizeof(sunaddr)) == -1) {
 		saved_errno = errno;
-		error("%s: cannot bind to path %s: %s",
-		    __func__, path, strerror(errno));
+		error_f("cannot bind to path %s: %s", path, strerror(errno));
 		close(sock);
 		errno = saved_errno;
 		return -1;
 	}
 	if (listen(sock, backlog) == -1) {
 		saved_errno = errno;
-		error("%s: cannot listen on path %s: %s",
-		    __func__, path, strerror(errno));
+		error_f("cannot listen on path %s: %s", path, strerror(errno));
 		close(sock);
 		unlink(path);
 		errno = saved_errno;
@@ -1956,7 +2000,7 @@ argv_assemble(int argc, char **argv)
 	struct sshbuf *buf, *arg;
 
 	if ((buf = sshbuf_new()) == NULL || (arg = sshbuf_new()) == NULL)
-		fatal("%s: sshbuf_new failed", __func__);
+		fatal_f("sshbuf_new failed");
 
 	for (i = 0; i < argc; i++) {
 		ws = 0;
@@ -1981,17 +2025,16 @@ argv_assemble(int argc, char **argv)
 				break;
 			}
 			if (r != 0)
-				fatal("%s: sshbuf_put_u8: %s",
-				    __func__, ssh_err(r));
+				fatal_fr(r, "sshbuf_put_u8");
 		}
 		if ((i != 0 && (r = sshbuf_put_u8(buf, ' ')) != 0) ||
 		    (ws != 0 && (r = sshbuf_put_u8(buf, '"')) != 0) ||
 		    (r = sshbuf_putb(buf, arg)) != 0 ||
 		    (ws != 0 && (r = sshbuf_put_u8(buf, '"')) != 0))
-			fatal("%s: buffer error: %s", __func__, ssh_err(r));
+			fatal_fr(r, "assemble");
 	}
 	if ((ret = malloc(sshbuf_len(buf) + 1)) == NULL)
-		fatal("%s: malloc failed", __func__);
+		fatal_f("malloc failed");
 	memcpy(ret, sshbuf_ptr(buf), sshbuf_len(buf));
 	ret[sshbuf_len(buf)] = '\0';
 	sshbuf_free(buf);
@@ -2007,7 +2050,7 @@ exited_cleanly(pid_t pid, const char *tag, const char *cmd, int quiet)
 
 	while (waitpid(pid, &status, 0) == -1) {
 		if (errno != EINTR) {
-			error("%s: waitpid: %s", tag, strerror(errno));
+			error("%s waitpid: %s", tag, strerror(errno));
 			return -1;
 		}
 	}
@@ -2414,4 +2457,25 @@ ssh_signal(int signum, sshsig_t handler)
 		return SIG_ERR;
 	}
 	return osa.sa_handler;
+}
+
+int
+stdfd_devnull(int do_stdin, int do_stdout, int do_stderr)
+{
+	int devnull, ret = 0;
+
+	if ((devnull = open(_PATH_DEVNULL, O_RDWR)) == -1) {
+		error_f("open %s: %s", _PATH_DEVNULL,
+		    strerror(errno));
+		return -1;
+	}
+	if ((do_stdin && dup2(devnull, STDIN_FILENO) == -1) ||
+	    (do_stdout && dup2(devnull, STDOUT_FILENO) == -1) ||
+	    (do_stderr && dup2(devnull, STDERR_FILENO) == -1)) {
+		error_f("dup2: %s", strerror(errno));
+		ret = -1;
+	}
+	if (devnull > STDERR_FILENO)
+		close(devnull);
+	return ret;
 }

@@ -57,7 +57,6 @@ AWK=@AWK@
 RANLIB=@RANLIB@
 INSTALL=@INSTALL@
 SED=@SED@
-ENT=@ENT@
 XAUTH_PATH=@XAUTH_PATH@
 LDFLAGS=-L. -Lopenbsd-compat/ @LDFLAGS@
 LDFLAGS_NOPIE=-L. -Lopenbsd-compat/ @LDFLAGS_NOPIE@
@@ -188,7 +187,7 @@ $(SSHOBJS): Makefile.in config.h
 $(SSHDOBJS): Makefile.in config.h
 configure-check: $(srcdir)/configure
 
-$(srcdir)/configure: configure.ac aclocal.m4
+$(srcdir)/configure: configure.ac $(srcdir)/m4/*.m4
 	@echo "ERROR: configure is out of date; please run ${AUTORECONF} (and configure)" 1>&2
 	@exit 1
 

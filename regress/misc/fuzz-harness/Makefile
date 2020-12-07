@@ -1,6 +1,6 @@
 # NB. libssh and libopenbsd-compat should be built with the same sanitizer opts.
-CXX=clang++-6.0
-FUZZ_FLAGS=-fsanitize=address,undefined -fsanitize-coverage=edge,trace-pc
+CXX=clang++-9
+FUZZ_FLAGS=-fsanitize=address,fuzzer
 FUZZ_LIBS=-lFuzzer
 
 CXXFLAGS=-O2 -g -Wall -Wextra -Wno-unused-parameter -I ../../.. $(FUZZ_FLAGS)
@@ -9,7 +9,7 @@ LIBS=-lssh -lopenbsd-compat -lcrypto -lfido2 -lcbor $(FUZZ_LIBS)
 COMMON_OBJS=ssh-sk-null.o
 
 TARGETS=pubkey_fuzz sig_fuzz authopt_fuzz sshsig_fuzz \
-	sshsigopt_fuzz privkey_fuzz
+	sshsigopt_fuzz privkey_fuzz kex_fuzz
 
 all: $(TARGETS)
 
@@ -33,6 +33,9 @@ sshsigopt_fuzz: sshsigopt_fuzz.o $(COMMON_OBJS)
 
 privkey_fuzz: privkey_fuzz.o $(COMMON_OBJS)
 	$(CXX) -o $@ privkey_fuzz.o $(COMMON_OBJS) $(LDFLAGS) $(LIBS)
+
+kex_fuzz: kex_fuzz.o $(COMMON_OBJS)
+	$(CXX) -o $@ kex_fuzz.o $(COMMON_OBJS) $(LDFLAGS) $(LIBS) -lz
 
 clean:
 	-rm -f *.o $(TARGETS)

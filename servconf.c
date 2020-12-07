@@ -1,5 +1,5 @@
 
-/* $OpenBSD: servconf.c,v 1.366 2020/06/24 15:09:53 markus Exp $ */
+/* $OpenBSD: servconf.c,v 1.371 2020/10/18 11:32:02 djm Exp $ */
 /*
  * Copyright (c) 1995 Tatu Ylonen <ylo@cs.hut.fi>, Espoo, Finland
  *                    All rights reserved
@@ -122,6 +122,8 @@ initialize_server_options(ServerOptions *options)
 	options->tcp_keep_alive = -1;
 	options->log_facility = SYSLOG_FACILITY_NOT_SET;
 	options->log_level = SYSLOG_LEVEL_NOT_SET;
+	options->num_log_verbose = 0;
+	options->log_verbose = NULL;
 	options->hostbased_authentication = -1;
 	options->hostbased_uses_name_from_packet_only = -1;
 	options->hostbased_key_types = NULL;
@@ -141,7 +143,7 @@ initialize_server_options(ServerOptions *options)
 	options->challenge_response_authentication = -1;
 	options->permit_empty_passwd = -1;
 	options->permit_user_env = -1;
-	options->permit_user_env_whitelist = NULL;
+	options->permit_user_env_allowlist = NULL;
 	options->compression = -1;
 	options->rekey_limit = -1;
 	options->rekey_interval = -1;
@@ -213,15 +215,15 @@ assemble_algorithms(ServerOptions *o)
 	all_key = sshkey_alg_list(0, 0, 1, ',');
 	all_sig = sshkey_alg_list(0, 1, 1, ',');
 	/* remove unsupported algos from default lists */
-	def_cipher = match_filter_whitelist(KEX_SERVER_ENCRYPT, all_cipher);
-	def_mac = match_filter_whitelist(KEX_SERVER_MAC, all_mac);
-	def_kex = match_filter_whitelist(KEX_SERVER_KEX, all_kex);
-	def_key = match_filter_whitelist(KEX_DEFAULT_PK_ALG, all_key);
-	def_sig = match_filter_whitelist(SSH_ALLOWED_CA_SIGALGS, all_sig);
+	def_cipher = match_filter_allowlist(KEX_SERVER_ENCRYPT, all_cipher);
+	def_mac = match_filter_allowlist(KEX_SERVER_MAC, all_mac);
+	def_kex = match_filter_allowlist(KEX_SERVER_KEX, all_kex);
+	def_key = match_filter_allowlist(KEX_DEFAULT_PK_ALG, all_key);
+	def_sig = match_filter_allowlist(SSH_ALLOWED_CA_SIGALGS, all_sig);
 #define ASSEMBLE(what, defaults, all) \
 	do { \
 		if ((r = kex_assemble_names(&o->what, defaults, all)) != 0) \
-			fatal("%s: %s: %s", __func__, #what, ssh_err(r)); \
+			fatal_fr(r, "%s", #what); \
 	} while (0)
 	ASSEMBLE(ciphers, def_cipher, all_cipher);
 	ASSEMBLE(macs, def_mac, all_mac);
@@ -390,7 +392,7 @@ fill_default_server_options(ServerOptions *options)
 		options->permit_empty_passwd = 0;
 	if (options->permit_user_env == -1) {
 		options->permit_user_env = 0;
-		options->permit_user_env_whitelist = NULL;
+		options->permit_user_env_allowlist = NULL;
 	}
 	if (options->compression == -1)
 #ifdef WITH_ZLIB
@@ -495,15 +497,6 @@ fill_default_server_options(ServerOptions *options)
 		options->auth_methods[0] = NULL;
 		options->num_auth_methods = 0;
 	}
-
-#ifndef HAVE_MMAP
-	if (use_privsep && options->compression == 1) {
-		error("This platform does not support both privilege "
-		    "separation and compression");
-		error("Compression disabled");
-		options->compression = 0;
-	}
-#endif
 }
 
 /* Keyword tokens. */
@@ -513,7 +506,7 @@ typedef enum {
 	sUsePAM,
 	/* Standard Options */
 	sPort, sHostKeyFile, sLoginGraceTime,
-	sPermitRootLogin, sLogFacility, sLogLevel,
+	sPermitRootLogin, sLogFacility, sLogLevel, sLogVerbose,
 	sRhostsRSAAuthentication, sRSAAuthentication,
 	sKerberosAuthentication, sKerberosOrLocalPasswd, sKerberosTicketCleanup,
 	sKerberosGetAFSToken, sChallengeResponseAuthentication,
@@ -578,6 +571,7 @@ static struct {
 	{ "permitrootlogin", sPermitRootLogin, SSHCFG_ALL },
 	{ "syslogfacility", sLogFacility, SSHCFG_GLOBAL },
 	{ "loglevel", sLogLevel, SSHCFG_ALL },
+	{ "logverbose", sLogVerbose, SSHCFG_ALL },
 	{ "rhostsauthentication", sDeprecated, SSHCFG_GLOBAL },
 	{ "rhostsrsaauthentication", sDeprecated, SSHCFG_ALL },
 	{ "hostbasedauthentication", sHostbasedAuthentication, SSHCFG_ALL },
@@ -757,7 +751,7 @@ derelativise_path(const char *path)
 	if (path_absolute(expanded))
 		return expanded;
 	if (getcwd(cwd, sizeof(cwd)) == NULL)
-		fatal("%s: getcwd: %s", __func__, strerror(errno));
+		fatal_f("getcwd: %s", strerror(errno));
 	xasprintf(&ret, "%s/%s", cwd, expanded);
 	free(expanded);
 	return ret;
@@ -800,7 +794,7 @@ add_one_listen_addr(ServerOptions *options, const char *addr,
 	if (i >= options->num_listen_addrs) {
 		/* No entry for this rdomain; allocate one */
 		if (i >= INT_MAX)
-			fatal("%s: too many listen addresses", __func__);
+			fatal_f("too many listen addresses");
 		options->listen_addrs = xrecallocarray(options->listen_addrs,
 		    options->num_listen_addrs, options->num_listen_addrs + 1,
 		    sizeof(*options->listen_addrs));
@@ -937,10 +931,10 @@ process_permitopen_list(struct ssh *ssh, ServerOpCodes opcode,
 		ch = '\0';
 		host = hpdelim2(&arg, &ch);
 		if (host == NULL || ch == '/')
-			fatal("%s: missing host in %s", __func__, what);
+			fatal_f("missing host in %s", what);
 		host = cleanhostname(host);
 		if (arg == NULL || ((port = permitopen_port(arg)) < 0))
-			fatal("%s: bad port number in %s", __func__, what);
+			fatal_f("bad port number in %s", what);
 		/* Send it to channels layer */
 		channel_add_permission(ssh, FORWARD_ADM,
 		    where, host, port);
@@ -1119,6 +1113,9 @@ match_cfg_line(char **condition, int line, struct connection_info *ci)
 				    "%.100s' at line %d", ci->host, arg, line);
 		} else if (strcasecmp(attrib, "address") == 0) {
 			if (ci == NULL || (ci->test && ci->address == NULL)) {
+				if (addr_match_list(NULL, arg) != 0)
+					fatal("Invalid Match address argument "
+					    "'%s' at line %d", arg, line);
 				result = 0;
 				continue;
 			}
@@ -1138,6 +1135,10 @@ match_cfg_line(char **condition, int line, struct connection_info *ci)
 			}
 		} else if (strcasecmp(attrib, "localaddress") == 0){
 			if (ci == NULL || (ci->test && ci->laddress == NULL)) {
+				if (addr_match_list(NULL, arg) != 0)
+					fatal("Invalid Match localaddress "
+					    "argument '%s' at line %d", arg,
+					    line);
 				result = 0;
 				continue;
 			}
@@ -1527,6 +1528,8 @@ process_server_config_line_depth(ServerOptions *options, char *line,
 				continue;
 			if (strcasecmp(arg, "touch-required") == 0)
 				value |= PUBKEYAUTH_TOUCH_REQUIRED;
+			else if (strcasecmp(arg, "verify-required") == 0)
+				value |= PUBKEYAUTH_VERIFY_REQUIRED;
 			else {
 				fatal("%s line %d: unsupported "
 				    "PubkeyAuthOptions option %s",
@@ -1630,7 +1633,7 @@ process_server_config_line_depth(ServerOptions *options, char *line,
 
 	case sPermitUserEnvironment:
 		intptr = &options->permit_user_env;
-		charptr = &options->permit_user_env_whitelist;
+		charptr = &options->permit_user_env_allowlist;
 		arg = strdelim(&cp);
 		if (!arg || *arg == '\0')
 			fatal("%s line %d: missing argument.",
@@ -1715,6 +1718,16 @@ process_server_config_line_depth(ServerOptions *options, char *line,
 			    filename, linenum, arg ? arg : "<NONE>");
 		if (*activep && *log_level_ptr == -1)
 			*log_level_ptr = (LogLevel) value;
+		break;
+
+	case sLogVerbose:
+		while ((arg = strdelim(&cp)) && *arg != '\0') {
+			if (!*activep)
+				continue;
+			array_append(filename, linenum, "oLogVerbose",
+			    &options->log_verbose, &options->num_log_verbose,
+			    arg);
+		}
 		break;
 
 	case sAllowTcpForwarding:
@@ -2038,17 +2051,15 @@ process_server_config_line_depth(ServerOptions *options, char *line,
 				    item, entry);
 			}
 			if (gbuf.gl_pathc > INT_MAX)
-				fatal("%s: too many glob results", __func__);
+				fatal_f("too many glob results");
 			for (n = 0; n < (int)gbuf.gl_pathc; n++) {
 				debug2("%s line %d: including %s",
 				    filename, linenum, gbuf.gl_pathv[n]);
 				item = xcalloc(1, sizeof(*item));
 				item->selector = strdup(arg);
 				item->filename = strdup(gbuf.gl_pathv[n]);
-				if ((item->contents = sshbuf_new()) == NULL) {
-					fatal("%s: sshbuf_new failed",
-					    __func__);
-				}
+				if ((item->contents = sshbuf_new()) == NULL)
+					fatal_f("sshbuf_new failed");
 				load_server_config(item->filename,
 				    item->contents);
 				parse_server_config_depth(options,
@@ -2402,7 +2413,7 @@ load_server_config(const char *filename, struct sshbuf *conf)
 	FILE *f;
 	int r, lineno = 0;
 
-	debug2("%s: filename %s", __func__, filename);
+	debug2_f("filename %s", filename);
 	if ((f = fopen(filename, "r")) == NULL) {
 		perror(filename);
 		exit(1);
@@ -2411,7 +2422,7 @@ load_server_config(const char *filename, struct sshbuf *conf)
 	/* grow buffer, so realloc is avoided for large config files */
 	if (fstat(fileno(f), &st) == 0 && st.st_size > 0 &&
             (r = sshbuf_allocate(conf, st.st_size)) != 0)
-		fatal("%s: allocate failed: %s", __func__, ssh_err(r));
+		fatal_fr(r, "allocate");
 	while (getline(&line, &linesize, f) != -1) {
 		lineno++;
 		/*
@@ -2423,13 +2434,13 @@ load_server_config(const char *filename, struct sshbuf *conf)
 			memcpy(cp, "\n", 2);
 		cp = line + strspn(line, " \t\r");
 		if ((r = sshbuf_put(conf, cp, strlen(cp))) != 0)
-			fatal("%s: buffer error: %s", __func__, ssh_err(r));
+			fatal_fr(r, "sshbuf_put");
 	}
 	free(line);
 	if ((r = sshbuf_put_u8(conf, 0)) != 0)
-		fatal("%s: buffer error: %s", __func__, ssh_err(r));
+		fatal_fr(r, "sshbuf_put_u8");
 	fclose(f);
-	debug2("%s: done config len = %zu", __func__, sshbuf_len(conf));
+	debug2_f("done config len = %zu", sshbuf_len(conf));
 }
 
 void
@@ -2597,11 +2608,11 @@ parse_server_config_depth(ServerOptions *options, const char *filename,
 	if (depth < 0 || depth > SERVCONF_MAX_DEPTH)
 		fatal("Too many recursive configuration includes");
 
-	debug2("%s: config %s len %zu%s", __func__, filename, sshbuf_len(conf),
+	debug2_f("config %s len %zu%s", filename, sshbuf_len(conf),
 	    (flags & SSHCFG_NEVERMATCH ? " [checking syntax only]" : ""));
 
 	if ((obuf = cbuf = sshbuf_dup_string(conf)) == NULL)
-		fatal("%s: sshbuf_dup_string failed", __func__);
+		fatal_f("sshbuf_dup_string failed");
 	linenum = 1;
 	while ((cp = strsep(&cbuf, "\n")) != NULL) {
 		if (process_server_config_line_depth(options, cp,
@@ -2884,6 +2895,8 @@ dump_config(ServerOptions *o)
 	dump_cfg_strarray(sSetEnv, o->num_setenv, o->setenv);
 	dump_cfg_strarray_oneline(sAuthenticationMethods,
 	    o->num_auth_methods, o->auth_methods);
+	dump_cfg_strarray_oneline(sLogVerbose,
+	    o->num_log_verbose, o->log_verbose);
 
 	/* other arguments */
 	for (i = 0; i < o->num_subsystems; i++)
@@ -2925,11 +2938,11 @@ dump_config(ServerOptions *o)
 	}
 	printf("\n");
 
-	if (o->permit_user_env_whitelist == NULL) {
+	if (o->permit_user_env_allowlist == NULL) {
 		dump_cfg_fmtint(sPermitUserEnvironment, o->permit_user_env);
 	} else {
 		printf("permituserenvironment %s\n",
-		    o->permit_user_env_whitelist);
+		    o->permit_user_env_allowlist);
 	}
 
 	printf("pubkeyauthoptions");
@@ -2937,5 +2950,7 @@ dump_config(ServerOptions *o)
 		printf(" none");
 	if (o->pubkey_auth_options & PUBKEYAUTH_TOUCH_REQUIRED)
 		printf(" touch-required");
+	if (o->pubkey_auth_options & PUBKEYAUTH_VERIFY_REQUIRED)
+		printf(" verify-required");
 	printf("\n");
 }

@@ -1,4 +1,4 @@
-/* $OpenBSD: auth.c,v 1.146 2020/01/31 22:42:45 djm Exp $ */
+/* $OpenBSD: auth.c,v 1.149 2020/10/18 11:32:01 djm Exp $ */
 /*
  * Copyright (c) 2000 Markus Friedl.  All rights reserved.
  *
@@ -492,10 +492,10 @@ check_key_in_hostfiles(struct passwd *pw, struct sshkey *key, const char *host,
 		error("WARNING: revoked key for %s attempted authentication",
 		    host);
 	else if (host_status == HOST_OK)
-		debug("%s: key for %s found at %s:%ld", __func__,
+		debug_f("key for %s found at %s:%ld",
 		    found->host, found->file, found->line);
 	else
-		debug("%s: key for host %s not found", __func__, host);
+		debug_f("key for host %s not found", host);
 
 	free_hostkeys(hostkeys);
 
@@ -569,11 +569,15 @@ getpwnamallow(struct ssh *ssh, const char *user)
 #endif
 	struct passwd *pw;
 	struct connection_info *ci;
+	u_int i;
 
 	ci = get_connection_info(ssh, 1, options.use_dns);
 	ci->user = user;
 	parse_server_match_config(&options, &includes, ci);
 	log_change_level(options.log_level);
+	log_verbose_reset();
+	for (i = 0; i < options.num_log_verbose; i++)
+		log_verbose_add(options.log_verbose[i]);
 	process_permitopen(ssh, &options);
 
 #if defined(_AIX) && defined(HAVE_SETAUTHDB)
@@ -631,7 +635,7 @@ auth_key_is_revoked(struct sshkey *key)
 	if ((fp = sshkey_fingerprint(key, options.fingerprint_hash,
 	    SSH_FP_DEFAULT)) == NULL) {
 		r = SSH_ERR_ALLOC_FAIL;
-		error("%s: fingerprint key: %s", __func__, ssh_err(r));
+		error_fr(r, "fingerprint key");
 		goto out;
 	}
 
@@ -644,9 +648,9 @@ auth_key_is_revoked(struct sshkey *key)
 		    sshkey_type(key), fp, options.revoked_keys_file);
 		goto out;
 	default:
-		error("Error checking authentication key %s %s in "
-		    "revoked keys file %s: %s", sshkey_type(key), fp,
-		    options.revoked_keys_file, ssh_err(r));
+		error_r(r, "Error checking authentication key %s %s in "
+		    "revoked keys file %s", sshkey_type(key), fp,
+		    options.revoked_keys_file);
 		goto out;
 	}
 
@@ -672,7 +676,7 @@ auth_debug_add(const char *fmt,...)
 	vsnprintf(buf, sizeof(buf), fmt, args);
 	va_end(args);
 	if ((r = sshbuf_put_cstring(auth_debug, buf)) != 0)
-		fatal("%s: sshbuf_put_cstring: %s", __func__, ssh_err(r));
+		fatal_fr(r, "sshbuf_put_cstring");
 }
 
 void
@@ -685,8 +689,7 @@ auth_debug_send(struct ssh *ssh)
 		return;
 	while (sshbuf_len(auth_debug) != 0) {
 		if ((r = sshbuf_get_cstring(auth_debug, &msg, NULL)) != 0)
-			fatal("%s: sshbuf_get_cstring: %s",
-			    __func__, ssh_err(r));
+			fatal_fr(r, "sshbuf_get_cstring");
 		ssh_packet_send_debug(ssh, "%s", msg);
 		free(msg);
 	}
@@ -698,7 +701,7 @@ auth_debug_reset(void)
 	if (auth_debug != NULL)
 		sshbuf_reset(auth_debug);
 	else if ((auth_debug = sshbuf_new()) == NULL)
-		fatal("%s: sshbuf_new failed", __func__);
+		fatal_f("sshbuf_new failed");
 }
 
 struct passwd *
@@ -862,17 +865,17 @@ subprocess(const char *tag, struct passwd *pw, const char *command,
 	if (child != NULL)
 		*child = NULL;
 
-	debug3("%s: %s command \"%s\" running as %s (flags 0x%x)", __func__,
+	debug3_f("%s command \"%s\" running as %s (flags 0x%x)",
 	    tag, command, pw->pw_name, flags);
 
 	/* Check consistency */
 	if ((flags & SSH_SUBPROCESS_STDOUT_DISCARD) != 0 &&
 	    (flags & SSH_SUBPROCESS_STDOUT_CAPTURE) != 0) {
-		error("%s: inconsistent flags", __func__);
+		error_f("inconsistent flags");
 		return 0;
 	}
 	if (((flags & SSH_SUBPROCESS_STDOUT_CAPTURE) == 0) != (child == NULL)) {
-		error("%s: inconsistent flags/output", __func__);
+		error_f("inconsistent flags/output");
 		return 0;
 	}
 
@@ -984,7 +987,7 @@ subprocess(const char *tag, struct passwd *pw, const char *command,
 		return 0;
 	}
 	/* Success */
-	debug3("%s: %s pid %ld", __func__, tag, (long)pid);
+	debug3_f("%s pid %ld", tag, (long)pid);
 	if (child != NULL)
 		*child = f;
 	return pid;
@@ -1006,21 +1009,22 @@ auth_log_authopts(const char *loc, const struct sshauthopt *opts, int do_remote)
 
 	snprintf(buf, sizeof(buf), "%d", opts->force_tun_device);
 	/* Try to keep this alphabetically sorted */
-	snprintf(msg, sizeof(msg), "key options:%s%s%s%s%s%s%s%s%s%s%s%s%s%s",
+	snprintf(msg, sizeof(msg), "key options:%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s",
 	    opts->permit_agent_forwarding_flag ? " agent-forwarding" : "",
 	    opts->force_command == NULL ? "" : " command",
 	    do_env ?  " environment" : "",
 	    opts->valid_before == 0 ? "" : "expires",
+	    opts->no_require_user_presence ? " no-touch-required" : "",
 	    do_permitopen ?  " permitopen" : "",
 	    do_permitlisten ?  " permitlisten" : "",
 	    opts->permit_port_forwarding_flag ? " port-forwarding" : "",
 	    opts->cert_principals == NULL ? "" : " principals",
 	    opts->permit_pty_flag ? " pty" : "",
+	    opts->require_verify ? " uv" : "",
 	    opts->force_tun_device == -1 ? "" : " tun=",
 	    opts->force_tun_device == -1 ? "" : buf,
 	    opts->permit_user_rc ? " user-rc" : "",
-	    opts->permit_x11_forwarding_flag ? " x11-forwarding" : "",
-	    opts->no_require_user_presence ? " no-touch-required" : "");
+	    opts->permit_x11_forwarding_flag ? " x11-forwarding" : "");
 
 	debug("%s: %s", loc, msg);
 	if (do_remote)
@@ -1068,7 +1072,7 @@ auth_activate_options(struct ssh *ssh, struct sshauthopt *opts)
 	struct sshauthopt *old = auth_opts;
 	const char *emsg = NULL;
 
-	debug("%s: setting new authentication options", __func__);
+	debug_f("setting new authentication options");
 	if ((auth_opts = sshauthopt_merge(old, opts, &emsg)) == NULL) {
 		error("Inconsistent authentication options: %s", emsg);
 		return -1;
@@ -1082,7 +1086,7 @@ auth_restrict_session(struct ssh *ssh)
 {
 	struct sshauthopt *restricted;
 
-	debug("%s: restricting session", __func__);
+	debug_f("restricting session");
 
 	/* A blank sshauthopt defaults to permitting nothing */
 	restricted = sshauthopt_new();
@@ -1090,7 +1094,7 @@ auth_restrict_session(struct ssh *ssh)
 	restricted->restricted = 1;
 
 	if (auth_activate_options(ssh, restricted) != 0)
-		fatal("%s: failed to restrict session", __func__);
+		fatal_f("failed to restrict session");
 	sshauthopt_free(restricted);
 }
 
@@ -1165,8 +1169,7 @@ auth_authorise_keyopts(struct ssh *ssh, struct passwd *pw,
 		case -1:
 		default:
 			/* invalid */
-			error("%s: Certificate source-address invalid",
-			    loc);
+			error("%s: Certificate source-address invalid", loc);
 			/* FALLTHROUGH */
 		case 0:
 			logit("%s: Authentication tried for %.100s with valid "

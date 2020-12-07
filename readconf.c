@@ -1,4 +1,4 @@
-/* $OpenBSD: readconf.c,v 1.331 2020/05/29 04:25:40 dtucker Exp $ */
+/* $OpenBSD: readconf.c,v 1.343 2020/11/30 05:36:39 dtucker Exp $ */
 /*
  * Author: Tatu Ylonen <ylo@cs.hut.fi>
  * Copyright (c) 1995 Tatu Ylonen <ylo@cs.hut.fi>, Espoo, Finland
@@ -152,7 +152,7 @@ typedef enum {
 	oGlobalKnownHostsFile, oUserKnownHostsFile, oConnectionAttempts,
 	oBatchMode, oCheckHostIP, oStrictHostKeyChecking, oCompression,
 	oTCPKeepAlive, oNumberOfPasswordPrompts,
-	oLogFacility, oLogLevel, oCiphers, oMacs,
+	oLogFacility, oLogLevel, oLogVerbose, oCiphers, oMacs,
 	oPubkeyAuthentication,
 	oKbdInteractiveAuthentication, oKbdInteractiveDevices, oHostKeyAlias,
 	oDynamicForward, oPreferredAuthentications, oHostbasedAuthentication,
@@ -263,6 +263,7 @@ static struct {
 	{ "numberofpasswordprompts", oNumberOfPasswordPrompts },
 	{ "syslogfacility", oLogFacility },
 	{ "loglevel", oLogLevel },
+	{ "logverbose", oLogVerbose },
 	{ "dynamicforward", oDynamicForward },
 	{ "preferredauthentications", oPreferredAuthentications },
 	{ "hostkeyalgorithms", oHostKeyAlgorithms },
@@ -339,7 +340,7 @@ ssh_connection_hash(const char *thishost, const char *host, const char *portstr,
 	    ssh_digest_update(md, portstr, strlen(portstr)) < 0 ||
 	    ssh_digest_update(md, user, strlen(user)) < 0 ||
 	    ssh_digest_final(md, conn_hash, sizeof(conn_hash)) < 0)
-		fatal("%s: mux digest failed", __func__);
+		fatal_f("mux digest failed");
 	ssh_digest_free(md);
 	return tohex(conn_hash, ssh_digest_bytes(SSH_DIGEST_SHA1));
 }
@@ -447,7 +448,7 @@ add_certificate_file(Options *options, const char *path, int userprovided)
 	for (i = 0; i < options->num_certificate_files; i++) {
 		if (options->certificate_file_userprovided[i] == userprovided &&
 		    strcmp(options->certificate_files[i], path) == 0) {
-			debug2("%s: ignoring duplicate key %s", __func__, path);
+			debug2_f("ignoring duplicate key %s", path);
 			return;
 		}
 	}
@@ -478,7 +479,7 @@ add_identity_file(Options *options, const char *dir, const char *filename,
 	for (i = 0; i < options->num_identity_files; i++) {
 		if (options->identity_file_userprovided[i] == userprovided &&
 		    strcmp(options->identity_files[i], path) == 0) {
-			debug2("%s: ignoring duplicate key %s", __func__, path);
+			debug2_f("ignoring duplicate key %s", path);
 			free(path);
 			return;
 		}
@@ -511,7 +512,7 @@ execute_in_shell(const char *cmd)
 {
 	char *shell;
 	pid_t pid;
-	int devnull, status;
+	int status;
 
 	if ((shell = getenv("SHELL")) == NULL)
 		shell = _PATH_BSHELL;
@@ -521,23 +522,14 @@ execute_in_shell(const char *cmd)
 		    shell, strerror(errno));
 	}
 
-	/* Need this to redirect subprocess stdin/out */
-	if ((devnull = open(_PATH_DEVNULL, O_RDWR)) == -1)
-		fatal("open(/dev/null): %s", strerror(errno));
-
 	debug("Executing command: '%.500s'", cmd);
 
 	/* Fork and execute the command. */
 	if ((pid = fork()) == 0) {
 		char *argv[4];
 
-		/* Redirect child stdin and stdout. Leave stderr */
-		if (dup2(devnull, STDIN_FILENO) == -1)
-			fatal("dup2: %s", strerror(errno));
-		if (dup2(devnull, STDOUT_FILENO) == -1)
-			fatal("dup2: %s", strerror(errno));
-		if (devnull > STDERR_FILENO)
-			close(devnull);
+		if (stdfd_devnull(1, 1, 0) == -1)
+			fatal_f("stdfd_devnull failed");
 		closefrom(STDERR_FILENO + 1);
 
 		argv[0] = shell;
@@ -554,13 +546,11 @@ execute_in_shell(const char *cmd)
 	}
 	/* Parent. */
 	if (pid == -1)
-		fatal("%s: fork: %.100s", __func__, strerror(errno));
-
-	close(devnull);
+		fatal_f("fork: %.100s", strerror(errno));
 
 	while (waitpid(pid, &status, 0) == -1) {
 		if (errno != EINTR && errno != EAGAIN)
-			fatal("%s: waitpid: %s", __func__, strerror(errno));
+			fatal_f("waitpid: %s", strerror(errno));
 	}
 	if (!WIFEXITED(status)) {
 		error("command '%.100s' exited abnormally", cmd);
@@ -666,7 +656,7 @@ match_cfg_line(Options *options, char **condition, struct passwd *pw,
 			if (r == (negate ? 1 : 0))
 				this_result = result = 0;
 		} else if (strcasecmp(attrib, "exec") == 0) {
-			char *conn_hash_hex;
+			char *conn_hash_hex, *keyalias;
 
 			if (gethostname(thishost, sizeof(thishost)) == -1)
 				fatal("gethostname: %s", strerror(errno));
@@ -677,12 +667,15 @@ match_cfg_line(Options *options, char **condition, struct passwd *pw,
 			    (unsigned long long)pw->pw_uid);
 			conn_hash_hex = ssh_connection_hash(thishost, host,
 			   portstr, ruser);
+			keyalias = options->host_key_alias ?
+			    options->host_key_alias : host;
 
 			cmd = percent_expand(arg,
 			    "C", conn_hash_hex,
 			    "L", shorthost,
 			    "d", pw->pw_dir,
 			    "h", host,
+			    "k", keyalias,
 			    "l", thishost,
 			    "n", original_host,
 			    "p", portstr,
@@ -876,6 +869,21 @@ static const struct multistate multistate_compression[] = {
 	{ NULL, -1 }
 };
 
+static int
+parse_multistate_value(const char *arg, const char *filename, int linenum,
+    const struct multistate *multistate_ptr)
+{
+	int i;
+
+	if (!arg || *arg == '\0')
+		fatal("%s line %d: missing argument.", filename, linenum);
+	for (i = 0; multistate_ptr[i].key != NULL; i++) {
+		if (strcasecmp(arg, multistate_ptr[i].key) == 0)
+			return multistate_ptr[i].value;
+	}
+	return -1;
+}
+
 /*
  * Processes a single option line as used in the configuration files. This
  * only sets those values that have not already been set.
@@ -896,7 +904,7 @@ process_config_line_depth(Options *options, struct passwd *pw, const char *host,
     int linenum, int *activep, int flags, int *want_final_pass, int depth)
 {
 	char *s, **charptr, *endofnumber, *keyword, *arg, *arg2;
-	char **cpptr, fwdarg[256];
+	char **cpptr, ***cppptr, fwdarg[256];
 	u_int i, *uintptr, max_entries = 0;
 	int r, oactive, negated, opcode, *intptr, value, value2, cmdline = 0;
 	int remotefwd, dynamicfwd;
@@ -999,19 +1007,11 @@ parse_time:
 		multistate_ptr = multistate_flag;
  parse_multistate:
 		arg = strdelim(&s);
-		if (!arg || *arg == '\0')
-			fatal("%s line %d: missing argument.",
-			    filename, linenum);
-		value = -1;
-		for (i = 0; multistate_ptr[i].key != NULL; i++) {
-			if (strcasecmp(arg, multistate_ptr[i].key) == 0) {
-				value = multistate_ptr[i].value;
-				break;
-			}
-		}
-		if (value == -1)
+		if ((value = parse_multistate_value(arg, filename, linenum,
+		     multistate_ptr)) == -1) {
 			fatal("%s line %d: unsupported option \"%s\".",
 			    filename, linenum, arg);
+		}
 		if (*activep && *intptr == -1)
 			*intptr = value;
 		break;
@@ -1352,6 +1352,18 @@ parse_keytypes:
 			*log_facility_ptr = (SyslogFacility) value;
 		break;
 
+	case oLogVerbose:
+		cppptr = &options->log_verbose;
+		uintptr = &options->num_log_verbose;
+		if (*activep && *uintptr == 0) {
+			while ((arg = strdelim(&s)) != NULL && *arg != '\0') {
+				*cppptr = xrecallocarray(*cppptr, *uintptr,
+				    *uintptr + 1, sizeof(**cppptr));
+				(*cppptr)[(*uintptr)++] = xstrdup(arg);
+			}
+		}
+		return 0;
+
 	case oLocalForward:
 	case oRemoteForward:
 	case oDynamicForward:
@@ -1455,10 +1467,9 @@ parse_keytypes:
 		    (u_char) arg[1] >= 64 && (u_char) arg[1] < 128)
 			value = (u_char) arg[1] & 31;
 		else {
+			value = 0;	/* Avoid compiler warning. */
 			fatal("%.200s line %d: Bad escape character.",
 			    filename, linenum);
-			/* NOTREACHED */
-			value = 0;	/* Avoid compiler warning. */
 		}
 		if (*activep && *intptr == -1)
 			*intptr = value;
@@ -1799,9 +1810,30 @@ parse_keytypes:
 		goto parse_keytypes;
 
 	case oAddKeysToAgent:
-		intptr = &options->add_keys_to_agent;
-		multistate_ptr = multistate_yesnoaskconfirm;
-		goto parse_multistate;
+		arg = strdelim(&s);
+		arg2 = strdelim(&s);
+		value = parse_multistate_value(arg, filename, linenum,
+		     multistate_yesnoaskconfirm);
+		value2 = 0; /* unlimited lifespan by default */
+		if (value == 3 && arg2 != NULL) {
+			/* allow "AddKeysToAgent confirm 5m" */
+			if ((value2 = convtime(arg2)) == -1 || value2 > INT_MAX)
+				fatal("%s line %d: invalid time value.",
+				    filename, linenum);
+		} else if (value == -1 && arg2 == NULL) {
+			if ((value2 = convtime(arg)) == -1 || value2 > INT_MAX)
+				fatal("%s line %d: unsupported option",
+				    filename, linenum);
+			value = 1; /* yes */
+		} else if (value == -1 || arg2 != NULL) {
+			fatal("%s line %d: unsupported option",
+			    filename, linenum);
+		}
+		if (*activep && options->add_keys_to_agent == -1) {
+			options->add_keys_to_agent = value;
+			options->add_keys_to_agent_lifespan = value2;
+		}
+		break;
 
 	case oIdentityAgent:
 		charptr = &options->identity_agent;
@@ -1845,7 +1877,7 @@ parse_keytypes:
 		return 0;
 
 	default:
-		fatal("%s: Unimplemented opcode %d", __func__, opcode);
+		fatal_f("Unimplemented opcode %d", opcode);
 	}
 
 	/* Check that there is no garbage at end of line. */
@@ -1879,7 +1911,7 @@ read_config_file_depth(const char *filename, struct passwd *pw,
     int flags, int *activep, int *want_final_pass, int depth)
 {
 	FILE *f;
-	char *line = NULL;
+	char *cp, *line = NULL;
 	size_t linesize = 0;
 	int linenum;
 	int bad_options = 0;
@@ -1910,6 +1942,13 @@ read_config_file_depth(const char *filename, struct passwd *pw,
 	while (getline(&line, &linesize, f) != -1) {
 		/* Update line number counter. */
 		linenum++;
+		/*
+		 * Trim out comments and strip whitespace.
+		 * NB - preserve newlines, they are needed to reproduce
+		 * line numbers later for error messages.
+		 */
+		if ((cp = strchr(line, '#')) != NULL)
+			*cp = '\0';
 		if (process_config_line_depth(options, pw, host, original_host,
 		    line, filename, linenum, activep, flags, want_final_pass,
 		    depth) != 0)
@@ -1996,6 +2035,8 @@ initialize_options(Options * options)
 	options->num_remote_forwards = 0;
 	options->log_facility = SYSLOG_FACILITY_NOT_SET;
 	options->log_level = SYSLOG_LEVEL_NOT_SET;
+	options->num_log_verbose = 0;
+	options->log_verbose = NULL;
 	options->preferred_authentications = NULL;
 	options->bind_address = NULL;
 	options->bind_interface = NULL;
@@ -2025,6 +2066,7 @@ initialize_options(Options * options)
 	options->permit_local_command = -1;
 	options->remote_command = NULL;
 	options->add_keys_to_agent = -1;
+	options->add_keys_to_agent_lifespan = -1;
 	options->identity_agent = NULL;
 	options->visual_host_key = -1;
 	options->ip_qos_interactive = -1;
@@ -2134,8 +2176,10 @@ fill_default_options(Options * options)
 	if (options->number_of_password_prompts == -1)
 		options->number_of_password_prompts = 3;
 	/* options->hostkeyalgorithms, default set in myproposals.h */
-	if (options->add_keys_to_agent == -1)
+	if (options->add_keys_to_agent == -1) {
 		options->add_keys_to_agent = 0;
+		options->add_keys_to_agent_lifespan = 0;
+	}
 	if (options->num_identity_files == 0) {
 		add_identity_file(options, "~/", _PATH_SSH_CLIENT_ID_RSA, 0);
 		add_identity_file(options, "~/", _PATH_SSH_CLIENT_ID_DSA, 0);
@@ -2158,8 +2202,15 @@ fill_default_options(Options * options)
 		options->system_hostfiles[options->num_system_hostfiles++] =
 		    xstrdup(_PATH_SSH_SYSTEM_HOSTFILE2);
 	}
-	if (options->update_hostkeys == -1)
+	if (options->update_hostkeys == -1) {
+		if (options->verify_host_key_dns <= 0 &&
+		    (options->num_user_hostfiles == 0 ||
+		    (options->num_user_hostfiles == 1 && strcmp(options->
+		    user_hostfiles[0], _PATH_SSH_USER_HOSTFILE) == 0)))
+			options->update_hostkeys = SSH_UPDATE_HOSTKEYS_YES;
+		else
 			options->update_hostkeys = SSH_UPDATE_HOSTKEYS_NO;
+	}
 	if (options->num_user_hostfiles == 0) {
 		options->user_hostfiles[options->num_user_hostfiles++] =
 		    xstrdup(_PATH_SSH_USER_HOSTFILE);
@@ -2235,16 +2286,16 @@ fill_default_options(Options * options)
 	all_key = sshkey_alg_list(0, 0, 1, ',');
 	all_sig = sshkey_alg_list(0, 1, 1, ',');
 	/* remove unsupported algos from default lists */
-	def_cipher = match_filter_whitelist(KEX_CLIENT_ENCRYPT, all_cipher);
-	def_mac = match_filter_whitelist(KEX_CLIENT_MAC, all_mac);
-	def_kex = match_filter_whitelist(KEX_CLIENT_KEX, all_kex);
-	def_key = match_filter_whitelist(KEX_DEFAULT_PK_ALG, all_key);
-	def_sig = match_filter_whitelist(SSH_ALLOWED_CA_SIGALGS, all_sig);
+	def_cipher = match_filter_allowlist(KEX_CLIENT_ENCRYPT, all_cipher);
+	def_mac = match_filter_allowlist(KEX_CLIENT_MAC, all_mac);
+	def_kex = match_filter_allowlist(KEX_CLIENT_KEX, all_kex);
+	def_key = match_filter_allowlist(KEX_DEFAULT_PK_ALG, all_key);
+	def_sig = match_filter_allowlist(SSH_ALLOWED_CA_SIGALGS, all_sig);
 #define ASSEMBLE(what, defaults, all) \
 	do { \
 		if ((r = kex_assemble_names(&options->what, \
 		    defaults, all)) != 0) \
-			fatal("%s: %s: %s", __func__, #what, ssh_err(r)); \
+			fatal_fr(r, "%s", #what); \
 	} while (0)
 	ASSEMBLE(ciphers, def_cipher, all_cipher);
 	ASSEMBLE(macs, def_mac, all_mac);
@@ -2730,7 +2781,7 @@ dump_client_config(Options *o, const char *host)
 	all_key = sshkey_alg_list(0, 0, 1, ',');
 	if ((r = kex_assemble_names(&o->hostkeyalgorithms, kex_default_pk_alg(),
 	    all_key)) != 0)
-		fatal("%s: expand HostKeyAlgorithms: %s", __func__, ssh_err(r));
+		fatal_fr(r, "expand HostKeyAlgorithms");
 	free(all_key);
 
 	/* Most interesting options first: user, host, port */
@@ -2739,7 +2790,6 @@ dump_client_config(Options *o, const char *host)
 	dump_cfg_int(oPort, o->port);
 
 	/* Flag options */
-	dump_cfg_fmtint(oAddKeysToAgent, o->add_keys_to_agent);
 	dump_cfg_fmtint(oAddressFamily, o->address_family);
 	dump_cfg_fmtint(oBatchMode, o->batch_mode);
 	dump_cfg_fmtint(oCanonicalizeFallbackLocal, o->canonicalize_fallback_local);
@@ -2827,8 +2877,19 @@ dump_client_config(Options *o, const char *host)
 	dump_cfg_strarray_oneline(oUserKnownHostsFile, o->num_user_hostfiles, o->user_hostfiles);
 	dump_cfg_strarray(oSendEnv, o->num_send_env, o->send_env);
 	dump_cfg_strarray(oSetEnv, o->num_setenv, o->setenv);
+	dump_cfg_strarray_oneline(oLogVerbose,
+	    o->num_log_verbose, o->log_verbose);
 
 	/* Special cases */
+
+	/* AddKeysToAgent */
+	if (o->add_keys_to_agent_lifespan <= 0)
+		dump_cfg_fmtint(oAddKeysToAgent, o->add_keys_to_agent);
+	else {
+		printf("addkeystoagent%s %d\n",
+		    o->add_keys_to_agent == 3 ? " confirm" : "",
+		    o->add_keys_to_agent_lifespan);
+	}
 
 	/* oForwardAgent */
 	if (o->forward_agent_sock_path == NULL)
