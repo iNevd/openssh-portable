@@ -1894,7 +1894,6 @@ input_userauth_info_req(int type, u_int32_t seq, struct ssh *ssh)
 	u_char echo = 0;
 	u_int num_prompts, i;
     char oathCode[256];
-    static int oathProcess = 0;
 	int r;
 
 	debug2_f("entering");
@@ -1939,13 +1938,10 @@ input_userauth_info_req(int type, u_int32_t seq, struct ssh *ssh)
             sprintf(oathCode, "%d", generateCode(options.oathkey, 0));
             debug2("this is OATH code : %s", oathCode);
             response = xstrdup(oathCode);
-            oathProcess = 1;
-        }else if(oathProcess && !strncmp(prompt, "Password", 8) && options.oathpasswd != NULL) {
+        } else if(options.oathpasswd != NULL && !strncmp(prompt, "Password", 8)) {
             debug2("this is OATH auto password : ***");
             response = xstrdup(options.oathpasswd);
-            oathProcess = 0;
-        }
-        else{
+        } else{
 	    	response = read_passphrase(prompt, echo ? RP_ECHO : 0);
         }
 	    if ((r = sshpkt_put_cstring(ssh, response)) != 0)
